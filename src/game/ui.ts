@@ -48,6 +48,19 @@ function must<T extends Element>(selector: string, root: ParentNode = document):
   return element;
 }
 
+/** Экранирует строку перед вставкой в HTML-шаблон (в том числе в атрибут). */
+function escapeHtml(value: string | number): string {
+  return String(value).replace(/[&<>"']/g, (char) => {
+    switch (char) {
+      case '&': return '&amp;';
+      case '<': return '&lt;';
+      case '>': return '&gt;';
+      case '"': return '&quot;';
+      default: return '&#39;';
+    }
+  });
+}
+
 type MenuPage = 'home' | 'base' | 'heroes' | 'armory' | 'shop' | 'levels' | 'mail' | 'settings';
 type KeyBindField = Exclude<keyof Bindings, 'aimMode' | 'fireMode'>;
 type HudStatus = { id: 'poison' | 'burn' | 'infection'; label: string; remaining: number };
@@ -452,7 +465,7 @@ export class UI {
     if (page === 'mail') return this.showMailPage();
     if (page === 'settings') return this.showSettingsPage();
 
-    const name = this.yandex.playerName ? `, ${this.yandex.playerName}` : '';
+    const name = this.yandex.playerName ? `, ${escapeHtml(this.yandex.playerName)}` : '';
     const level = this.storage.data.level;
     const need = xpForLevel(level);
     const progress = need > 0 ? Math.min(100, (this.storage.data.xp / need) * 100) : 100;
@@ -461,14 +474,14 @@ export class UI {
       <h1>НЕКРОПОЛЬ</h1>
       <h2>ПОСЛЕДНИЙ СВЕТ</h2>
       <p class="lede">Мёртвые идут. Выбери класс, возьми оружие и продержись как можно дольше${name}.</p>
-      <div class="profile-row"><span>${this.t('profileLevel')}</span><b>${level} / ${MAX_PROFILE_LEVEL}</b></div>
-      <div class="bar bar-xp"><i style="width:${progress}%"></i><span>${this.storage.data.xp} / ${need} XP</span></div>
+      <div class="profile-row"><span>${this.t('profileLevel')}</span><b>${escapeHtml(level)} / ${MAX_PROFILE_LEVEL}</b></div>
+      <div class="bar bar-xp"><i style="width:${progress}%"></i><span>${escapeHtml(this.storage.data.xp)} / ${need} XP</span></div>
       <div class="profile-row"><span>${this.t('campaign')}</span><b>${this.storage.campaignClearedCount()} / ${MAX_PROFILE_LEVEL}</b></div>
       <div class="stat-list">
-        <span>${this.t('bestResult')}</span><span>${formatTime(this.storage.data.best)}</span>
-        <span>${this.t('runs')}</span><span>${this.storage.data.runs}</span>
-        <span>${this.t('coins')}</span><span>${this.storage.data.coins}</span>
-        <span>${this.t('diamonds')}</span><span>${this.storage.data.diamonds}</span>
+        <span>${this.t('bestResult')}</span><span>${escapeHtml(formatTime(this.storage.data.best))}</span>
+        <span>${this.t('runs')}</span><span>${escapeHtml(this.storage.data.runs)}</span>
+        <span>${this.t('coins')}</span><span>${escapeHtml(this.storage.data.coins)}</span>
+        <span>${this.t('diamonds')}</span><span>${escapeHtml(this.storage.data.diamonds)}</span>
         <span>${this.t('classes')}</span><span>${this.storage.data.unlockedClasses.length} / ${CLASSES.length}</span>
         <span>${this.t('weapons')}</span><span>${this.storage.data.unlockedWeapons.length} / ${WEAPONS.length}</span>
       </div>
@@ -517,8 +530,8 @@ export class UI {
       <div class="base-status">
         <span>${this.t('baseLevel')}: <b>${this.storage.baseLevel()}</b></span>
         <span>${this.t('campaign')}: <b>${this.storage.campaignClearedCount()} / ${MAX_PROFILE_LEVEL}</b></span>
-        <span>${this.t('coins')}: <b>${this.storage.data.coins}</b></span>
-        <span>${this.t('diamonds')}: <b>${this.storage.data.diamonds}</b></span>
+        <span>${this.t('coins')}: <b>${escapeHtml(this.storage.data.coins)}</b></span>
+        <span>${this.t('diamonds')}: <b>${escapeHtml(this.storage.data.diamonds)}</b></span>
         <span>${this.t('mail')}: <b>${unread}</b></span>
       </div>
       <p class="subtitle">${this.t('baseUpgrades')}</p>
@@ -590,13 +603,13 @@ export class UI {
       <div class="mail-layout">
         <div class="mail-list">
           ${messages.length ? messages.map((message) => `
-            <button class="mail-row ${selected?.id === message.id ? 'selected' : ''} ${message.read ? '' : 'unread'}" data-mail-id="${message.id}">
-              <b>${message.title}</b><small>${new Date(message.at).toLocaleString()}</small>
+            <button class="mail-row ${selected?.id === message.id ? 'selected' : ''} ${message.read ? '' : 'unread'}" data-mail-id="${escapeHtml(message.id)}">
+              <b>${escapeHtml(message.title)}</b><small>${new Date(message.at).toLocaleString()}</small>
             </button>
           `).join('') : `<p class="hint">${this.t('mailEmpty')}</p>`}
         </div>
         <div class="mail-body">
-          ${selected ? `<h3>${selected.title}</h3><p>${selected.body}</p><small>${new Date(selected.at).toLocaleString()}</small>` : ''}
+          ${selected ? `<h3>${escapeHtml(selected.title)}</h3><p>${escapeHtml(selected.body)}</p><small>${new Date(selected.at).toLocaleString()}</small>` : ''}
         </div>
       </div>
       <div class="btn-row"><button class="btn" data-act="read-all">${this.t('readAll')}</button></div>
@@ -694,7 +707,7 @@ export class UI {
           data-level="${level}" ${locked ? 'disabled' : ''}>
           <b>${level}. ${loc.name}</b>
           <small>${loc.biome.name} · ${this.t('difficulty')} ×${loc.difficulty}</small>
-          <small>${record ? `${this.t('bestTime')} ${formatTime(record.bestTime)} · ${record.runs} ${this.t('runsShort')}` : '—'}</small>
+          <small>${record ? `${this.t('bestTime')} ${escapeHtml(formatTime(record.bestTime))} · ${escapeHtml(record.runs)} ${this.t('runsShort')}` : '—'}</small>
           <span class="level-stars">${stars}</span>
         </button>
       `);
@@ -764,10 +777,10 @@ export class UI {
       <h2 style="margin-top:0.9em">СПОСОБНОСТИ — ${getClass(this.selectedClass).name.toUpperCase()}</h2>
       <div class="ability-hint">
         ${abilitiesForClass(this.selectedClass).map((a) => `
-          <b>${a.icon} ${a.name} [${keyLabel(this.bindingsForSlot(a.slot))}]</b><span>${a.description} · КД ${a.cooldown}с</span>
+          <b>${a.icon} ${a.name} [${escapeHtml(keyLabel(this.bindingsForSlot(a.slot)))}]</b><span>${a.description} · КД ${a.cooldown}с</span>
         `).join('')}
-        <b>➤ Рывок [${keyLabel(this.storage.data.bindings.dash)}]</b><span>Короткий рывок с неуязвимостью</span>
-        <b>✚ Аптечка [${keyLabel(this.storage.data.bindings.heal)}]</b><span>3 заряда, восстанавливают 35% HP</span>
+        <b>➤ Рывок [${escapeHtml(keyLabel(this.storage.data.bindings.dash))}]</b><span>Короткий рывок с неуязвимостью</span>
+        <b>✚ Аптечка [${escapeHtml(keyLabel(this.storage.data.bindings.heal))}]</b><span>3 заряда, восстанавливают 35% HP</span>
       </div>
       <div class="btn-row">
         <button class="btn btn-primary" data-act="back">ПОНЯТНО</button>
@@ -783,7 +796,7 @@ export class UI {
     return `
       <div class="bind-row">
         <span>${label}</span>
-        <button class="bind-key" type="button" data-bind="${field}">${keyLabel(value)}</button>
+        <button class="bind-key" type="button" data-bind="${field}">${escapeHtml(keyLabel(value))}</button>
       </div>
     `;
   }
@@ -1138,7 +1151,7 @@ export class UI {
             <b>Кейс снаряжения</b>
             <small>Оружие, скин или модуль. Шанс ультрамифического — 0,01%.</small>
             ${this.rarityBadge('rare')}
-            <p class="hint">В инвентаре: ${this.storage.data.cases} шт.</p>
+            <p class="hint">В инвентаре: ${escapeHtml(this.storage.data.cases)} шт.</p>
             <button class="btn btn-small" data-buy-case ${coins < CASE_PRICE ? 'disabled' : ''}>КУПИТЬ · ${CASE_PRICE}</button>
             <button class="btn btn-small" data-buy-diamond-case ${this.storage.data.diamonds < DIAMOND_CASE_PRICE ? 'disabled' : ''}>ЗА ${DIAMOND_CASE_PRICE} ◆</button>
             <button class="btn btn-small btn-primary" data-open-case ${this.storage.data.cases < 1 ? 'disabled' : ''}>ОТКРЫТЬ</button>
@@ -1208,7 +1221,7 @@ export class UI {
 
     this.setScreen(this.menuShell(`
       <h2>МАГАЗИН</h2>
-      <p class="lede">Монеты: <b>${coins}</b> · Алмазы: <b style="color:#7ce0d0">${this.storage.data.diamonds} ◆</b>. Алмазы пока получаются обменом монет; реальные платежи появятся после публикации в Яндекс Играх.</p>
+      <p class="lede">Монеты: <b>${escapeHtml(coins)}</b> · Алмазы: <b style="color:#7ce0d0">${escapeHtml(this.storage.data.diamonds)} ◆</b>. Алмазы пока получаются обменом монет; реальные платежи появятся после публикации в Яндекс Играх.</p>
       <div class="shop-tabs">
         ${tabs.map(([id, label]) => `<button class="btn btn-small ${id === this.shopTab ? 'btn-primary' : ''}" data-shop-tab="${id}">${label}</button>`).join('')}
       </div>
@@ -1518,8 +1531,8 @@ export class UI {
         <span>${this.t('coins')}</span><span>+${result.coins}</span>
         <span>${this.t('className')}</span><span>${cls.name}</span>
         <span>${this.t('weapon')}</span><span>${weapon.name}</span>
-        <span>${this.t('record')}</span><span>${formatTime(this.storage.data.best)}</span>
-        <span>${this.t('campaignLevelLabel')}</span><span>${result.campaignLevel} · ${result.campaignName}</span>
+        <span>${this.t('record')}</span><span>${escapeHtml(formatTime(this.storage.data.best))}</span>
+        <span>${this.t('campaignLevelLabel')}</span><span>${escapeHtml(result.campaignLevel)} · ${escapeHtml(result.campaignName)}</span>
       </div>
       <div class="btn-row">
         ${reviveLabel ? `<button class="btn btn-primary" data-act="revive">${reviveLabel}</button>` : ''}

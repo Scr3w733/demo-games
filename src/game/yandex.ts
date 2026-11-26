@@ -40,6 +40,24 @@ export const AD = {
 
 export const LEADERBOARD = 'grimhollow_best';
 
+/** Загрузку SDK разрешаем только для доверенных origin'ов Яндекса. */
+function isTrustedYandexOrigin(value: string): boolean {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'https:') return false;
+    const host = url.hostname.toLowerCase();
+    return host === 'yandexgames.net'
+      || host === 'yandex.ru' || host.endsWith('.yandex.ru')
+      || host === 'ya.ru' || host.endsWith('.ya.ru')
+      || host === 'yandex.com' || host.endsWith('.yandex.com')
+      || host === 'yandex.kz' || host.endsWith('.yandex.kz')
+      || host === 'yandex.by' || host.endsWith('.yandex.by')
+      || host === 'yandex.com.tr' || host.endsWith('.yandex.com.tr');
+  } catch {
+    return false;
+  }
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
   return new Promise((resolve) => {
     const timer = window.setTimeout(() => resolve(null), ms);
@@ -59,8 +77,13 @@ export class Yandex {
 
   private async loadSdk(): Promise<void> {
     // Вне Яндекс Игр не делаем внешних запросов — игра работает в демо-режиме.
-    const inYandexFrame = window.parent !== window || document.referrer.includes('yandex');
-    if (!inYandexFrame) return;
+    // Простое window.parent !== window trusting любой iframe, поэтому проверяем
+    // реальный origin родителя (Chromium) или точный host реферера.
+    const ancestors = window.location.ancestorOrigins;
+    const inTrustedFrame = ancestors
+      ? Array.from(ancestors).some(isTrustedYandexOrigin)
+      : (window.parent !== window && isTrustedYandexOrigin(document.referrer));
+    if (!inTrustedFrame) return;
     await new Promise<void>((resolve) => {
       const script = document.createElement('script');
       const timer = window.setTimeout(resolve, 3000);
@@ -83,8 +106,12 @@ export class Yandex {
     if (sdk.player) {
       const player = await withTimeout(sdk.player.get(), 2000);
       if (player) {
-        this.playerName = player.getName();
-        this.playerAvatar = player.getAvatarSrc('small');
+        const name = player.getName();
+        this.playerName = typeof name === 'string'
+          ? name.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 80)
+          : '';
+        const avatar = player.getAvatarSrc('small');
+        this.playerAvatar = typeof avatar === 'string' ? avatar.slice(0, 2048) : '';
       }
     }
 
