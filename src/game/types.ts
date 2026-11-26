@@ -88,6 +88,8 @@ export interface EnemyDef {
   size: number;
   color: string;
   ranged?: boolean;
+  /** Зомби плюётся ядом на расстоянии, а не только кусает в упор. */
+  spit?: boolean;
   boss?: boolean;
   lifesteal?: number;
   ghost?: boolean;
@@ -274,10 +276,10 @@ export interface GameModeDef {
 }
 
 export interface CaseReward {
-  kind: 'weapon' | 'skin' | 'module' | 'coins' | 'class';
+  kind: 'weapon' | 'skin' | 'module' | 'coins' | 'diamonds' | 'class';
   id: string;
   name: string;
   rarity: RarityId;
-  /** Фактическое количество монет для награды kind: 'coins'. */
+  /** Количество валюты для наград kind: 'coins' и kind: 'diamonds'. */
   amount?: number;
 }

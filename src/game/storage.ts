@@ -30,6 +30,8 @@ export interface SaveData {
   diamonds: number;
   runs: number;
   muted: boolean;
+  /** Общая громкость игры (0..1), влияет на все звуки и музыку. */
+  masterVolume: number;
   classId: string;
   weaponId: string;
   bindings: Bindings;
@@ -54,6 +56,8 @@ export interface SaveData {
   baseUpgrades: Record<string, number>;
   mailbox: MailMessage[];
   mailSeq: number;
+  /** Один раз найденные тайники открытого мира (не возрождаются после выхода). */
+  lootedCaches: string[];
   /** Миграция управления: старые сохранения получают мышиное наведение. */
   inputRevision?: number;
 }
@@ -70,11 +74,11 @@ const GRAPHICS_QUALITIES = ['low', 'medium', 'high', 'ultra'] as const;
 const CROSSHAIR_STYLES = ['cross', 'dot', 'ring', 'rune', 'off'] as const;
 
 const SAVE_KEYS: Array<keyof SaveData> = [
-  'best', 'coins', 'diamonds', 'runs', 'muted', 'classId', 'weaponId', 'bindings',
+  'best', 'coins', 'diamonds', 'runs', 'muted', 'masterVolume', 'classId', 'weaponId', 'bindings',
   'graphics', 'music', 'crosshair', 'unlockedWeapons', 'unlockedClasses', 'skins',
   'equippedSkin', 'modules', 'equippedModules', 'cases', 'modeId', 'level', 'xp',
   'locale', 'campaign', 'campaignUnlocked', 'selectedLevel', 'baseUpgrades',
-  'mailbox', 'mailSeq', 'inputRevision',
+  'mailbox', 'mailSeq', 'lootedCaches', 'inputRevision',
 ];
 
 const defaults: SaveData = {
@@ -83,6 +87,7 @@ const defaults: SaveData = {
   diamonds: 0,
   runs: 0,
   muted: false,
+  masterVolume: 1,
   classId: 'soldier',
   weaponId: 'soldier_rifle',
   bindings: { ...DEFAULT_BINDINGS },
@@ -109,6 +114,7 @@ const defaults: SaveData = {
   baseUpgrades: {},
   mailbox: [],
   mailSeq: 1,
+  lootedCaches: [],
   inputRevision: 3,
 };
 
@@ -223,6 +229,7 @@ export class Storage {
       equippedModules: [...defaults.equippedModules],
       baseUpgrades: { ...defaults.baseUpgrades },
       mailbox: [...defaults.mailbox],
+      lootedCaches: [...defaults.lootedCaches],
       campaign: {},
     };
     try {
@@ -244,6 +251,7 @@ export class Storage {
       this.data.crosshair = sanitizeCrosshair(this.data.crosshair);
 
       this.data.muted = this.data.muted === true;
+      this.data.masterVolume = safeNumber(this.data.masterVolume, defaults.masterVolume, 0, 1);
       this.data.best = safeInteger(this.data.best, 0, 0, MAX_SAVE_NUMBER);
       this.data.coins = safeInteger(this.data.coins, 0, 0, MAX_SAVE_NUMBER);
       this.data.diamonds = safeInteger(this.data.diamonds, 0, 0, MAX_SAVE_NUMBER);
@@ -319,6 +327,8 @@ export class Storage {
       }
       this.data.baseUpgrades = upgrades;
       this.data.mailbox = this.sanitizeMailbox(this.data.mailbox);
+      const cacheIds = new Set(Array.from({ length: 256 }, (_, index) => `cache-${index}`));
+      this.data.lootedCaches = sanitizeIdArray(this.data.lootedCaches, cacheIds, defaults.lootedCaches, 256);
     } catch {
       // Приватный режим / заблокированный localStorage — игра работает без сохранения.
       // Частично повреждённое сохранение уже очищено значениями по умолчанию выше.

@@ -16,13 +16,17 @@ import {
   keyLabel,
   lockedWeapons,
   MAX_PROFILE_LEVEL,
+  MODULES,
   rollUpgrades,
+  weaponsForClass,
 } from './config';
 import { CC0_PATHS, cc0Image, preloadCc0 } from './assets';
 import { drawHeldWeapon, characterSprite, portalSprite, treeSprite } from './sprites';
 import type { Sound } from './audio';
 import type { Input } from './input';
 import type { Storage } from './storage';
+import { clearTempShop, loadTempShop, saveTempShop } from './tempShopDb';
+import type { TempShopContext, TempShopOffer, TempWeaponEntry } from './tempShopDb';
 import type { Yandex } from './yandex';
 import type {
   AbilitySlot,
@@ -71,6 +75,8 @@ export interface GameCallbacks {
   levelUp: (choices: UpgradeDef[]) => void;
   gameOver: (result: RunResult) => void;
   toast: (text: string) => void;
+  /** Открыть витрину торговца временного оружия открытого мира. */
+  tempShop: (ctx: TempShopContext) => void;
 }
 
 type GameState = 'idle' | 'playing' | 'paused' | 'levelup' | 'gameover';
@@ -102,6 +108,9 @@ interface Enemy {
   bleedDamage: number;
   hitCooldown: number;
   attackTimer: number;
+  spitTimer: number;
+  /** Секунды оставшегося агро: в открытом мире враг бежит только на шум выстрела. */
+  aggro: number;
   wobble: number;
   dead: boolean;
 }
@@ -129,6 +138,8 @@ interface EnemyProjectile {
   vy: number;
   damage: number;
   life: number;
+  radius: number;
+  color: string;
   status?: StatusId;
 }
 
@@ -221,6 +232,17 @@ interface CityBuilding {
   hasChest: boolean;
   doorX: number;
   doorY: number;
+  /** Дом открытого мира: рисуется CC0-тайлами, а не городским фасадом. */
+  openWorld?: boolean;
+}
+
+/** Одноразовый тайник с добычей в открытом мире. */
+interface LootCache {
+  id: string;
+  x: number;
+  y: number;
+  kind: 'supply' | 'armory' | 'relic';
+  claimed: boolean;
 }
 
 interface RoomBounds {
@@ -253,6 +275,11 @@ const RENDER_SCALE = 2;
 const WORLD_W = 2880;
 const WORLD_H = 2040;
 const PLAYER_RADIUS = 7;
+/** Игровая клетка equals одному тайлу карты. */
+const TILE_SIZE = 16;
+/** Зомби слышат выстрел в радиусе 7 клеток (7 × 16 = 112 world units). */
+const GUN_NOISE_RADIUS = 7 * TILE_SIZE;
+const AGGRO_MEMORY = 6;
 const CITY_WORLD_MUL = 3;
 const STATUS_LABELS: Record<StatusId, string> = {
   poison: 'ОТРАВЛЕНИЕ', burn: 'ГОРЕНИЕ', infection: 'ЗАРАЗА',
@@ -351,6 +378,11 @@ export class Game {
   private portals: Portal[] = [];
   private dungeon: DungeonState | null = null;
   private chest: { x: number; y: number } | null = null;
+  /** Торговец временным оружием: только в открытом мире, только в текущем забеге. */
+  private merchant: { x: number; y: number } | null = null;
+  /** Тайники открытого мира: добыча сохраняется в профиле после первого нахождения. */
+  private lootCaches: LootCache[] = [];
+  private tempWeapon: TempWeaponEntry | null = null;
   private cityBuildings: CityBuilding[] = [];
   private activeBuilding: CityBuilding | null = null;
   private interiorFloor = 0;
@@ -473,6 +505,8 @@ export class Game {
     this.trampled.clear();
     this.location = getCampaignLevel(this.campaignLevel + arenaOffset);
     this.biomeIndex = this.location.biomeIndex;
+    this.merchant = null;
+    this.lootCaches = [];
     if (this.mode.city) {
       this.generateCity();
       return;
@@ -634,6 +668,7 @@ export class Game {
   private generateCity(keepBuildings = false): void {
     this.worldW = WORLD_W * CITY_WORLD_MUL;
     this.worldH = WORLD_H * CITY_WORLD_MUL;
+    this.lootCaches = [];
     this.trampled.clear();
     this.decorations = [];
     this.obstacles = [];
@@ -675,7 +710,7 @@ export class Game {
             loot: 0,
             hasChest: hash(col * 17 + 3, row * 29 + 7) < 0.72,
             doorX: x + 150,
-            doorY: y + 282,
+            doorY: y + 274,
           });
         }
       }
@@ -757,7 +792,7 @@ export class Game {
   }
 
   /** Открытый мир: одна большая карта, биомы и дороги заданы координатами. */
-  private generateOpenWorld(): void {
+  private generateOpenWorld(keepBuildings = false): void {
     this.worldW = WORLD_W * 5;
     this.worldH = WORLD_H * 5;
     this.trampled.clear();
@@ -776,7 +811,7 @@ export class Game {
     this.interiorChest = null;
     this.interiorCleared = false;
     this.interiorEnemyScale = 1;
-    this.cityBuildings = [];
+    if (!keepBuildings) this.cityBuildings = [];
 
     const border = 24;
     this.obstacles.push(
@@ -807,15 +842,65 @@ export class Game {
       }
     }
 
-    // С CC0-атласа µFantasy: дома-руины в открытом мире, расставленные вне дорог.
-    const houseCount = Math.round(64 * this.qualityScale);
-    for (let i = 0; i < houseCount; i += 1) {
-      const x = 140 + hash(i, 551) * (this.worldW - 280);
-      const y = 140 + hash(557, i) * (this.worldH - 280);
-      if (this.isOpenRoad(x, y) || Math.hypot(x - this.worldW / 2, y - this.worldH / 2) < 240) continue;
-      if (this.hitsObstacle(x, y, 34)) continue;
-      this.obstacles.push({ x: Math.round(x - 24), y: Math.round(y - 20), w: 48, h: 40, kind: 'building', hp: 0 });
-      this.decorations.push({ x: Math.round(x), y: Math.round(y + 30), kind: 'lantern', tint: i % 3 });
+    // С CC0-атласа µFantasy: дома-руины в открытом мире. Разбиваем карту на клетки
+    // дорожной сетки и ставим по 2 дома в каждой — иначе дома попадались только за километр от спавна.
+    // Каждый дом — полноценный CityBuilding: в него можно войти и зачистить этажи как данж.
+    if (!keepBuildings) {
+      const names = ['Дом', 'Хижина', 'Склеп', 'Морг', 'Архив', 'Казарма'];
+      const styles: CityBuilding['style'][] = ['hospital', 'archive', 'morgue', 'crypt', 'forge', 'barracks', 'tower', 'vault'];
+      const cellW = 960;
+      const cellH = 720;
+      const cols = Math.ceil(this.worldW / cellW);
+      const rows = Math.ceil(this.worldH / cellH);
+      const cx0 = this.worldW / 2;
+      const cy0 = this.worldH / 2;
+      let id = 1000;
+      const addHouse = (x: number, y: number, seed: number): void => {
+        if (x + 40 > this.worldW - 40 || y + 32 > this.worldH - 32) return;
+        if (this.isOpenRoad(x, y) || this.hitsObstacle(x, y, 52)) return;
+        if (this.cityBuildings.some((b) =>
+          Math.abs(b.x + b.w / 2 - x) < 104 && Math.abs(b.y + b.h / 2 - y) < 88)) return;
+        const w = 80;
+        const h = 64;
+        const bx = Math.round(x - w / 2);
+        const by = Math.round(y - h / 2);
+        this.cityBuildings.push({
+          id: id++,
+          x: bx, y: by, w, h,
+          name: `${names[seed % names.length]} ${id - 1000}`,
+          style: styles[seed % styles.length],
+          floors: 1 + (seed % 3),
+          clearedFloors: 0,
+          loot: 0,
+          hasChest: hash(seed, 559) < 0.65,
+          doorX: x,
+          doorY: by + h + 14,
+          openWorld: true,
+        });
+      };
+      for (let gy = 0; gy < rows; gy += 1) {
+        for (let gx = 0; gx < cols; gx += 1) {
+          const cell = gy * cols + gx;
+          for (let slot = 0; slot < 2; slot += 1) {
+            const seed = cell * 2 + slot;
+            const x = Math.round(gx * cellW + 200 + hash(seed, 551) * 560);
+            const y = Math.round(gy * cellH + 170 + hash(557, seed) * 390);
+            if (Math.hypot(x - cx0, y - cy0) < 180) continue;
+            addHouse(x, y, seed);
+          }
+        }
+      }
+      // Несколько домов рядом со спавном: чтобы открытый мир сразу выглядел городом.
+      addHouse(cx0 - 180, cy0 - 70, 991);
+      addHouse(cx0 + 190, cy0 - 80, 992);
+      addHouse(cx0 - 200, cy0 + 100, 993);
+      addHouse(cx0 + 210, cy0 + 110, 994);
+    }
+    for (const building of this.cityBuildings) {
+      this.obstacles.push({
+        x: building.x, y: building.y, w: building.w, h: building.h, kind: 'building', hp: 0,
+      });
+      this.decorations.push({ x: building.doorX, y: building.doorY - 4, kind: 'lantern', tint: building.id % 3 });
     }
 
     // Фонари вдоль дорог: и освещение, и читаемые ориентиры в темноте.
@@ -838,6 +923,35 @@ export class Game {
       const x = vertical ? Math.round(hash(i, 419) * this.worldW / 960) * 960 + 12 : 140 + hash(i, 421) * (this.worldW - 280);
       const y = vertical ? 140 + hash(i, 423) * (this.worldH - 280) : Math.round(hash(i, 427) * this.worldH / 720) * 720 + 12;
       this.obstacles.push({ x: Math.round(x), y: Math.round(y), w: 22, h: 12, kind: 'car', hp: 0 });
+    }
+
+    // Торговец временным оружием стоит рядом с точкой спавна: игрок всегда может его найти.
+    const cx = this.worldW / 2;
+    const cy = this.worldH / 2;
+    this.merchant = { x: Math.round(cx + 72), y: Math.round(cy - 44) };
+    for (let ring = 0; ring < 6 && this.hitsObstacle(this.merchant.x, this.merchant.y, 22); ring += 1) {
+      this.merchant.x = Math.round(cx + 72 + ring * 26);
+      this.merchant.y = Math.round(cy - 44 + ring * 26);
+    }
+    this.decorations.push({ x: this.merchant.x, y: this.merchant.y + 8, kind: 'lantern', tint: 2 });
+
+    // Тайники с добычей: монеты, оружие, модули, алмазы и кейсы разбросаны по всему миру.
+    // ID детерминирован индексом, поэтому найденный тайник остаётся открытым и после выхода.
+    const cacheKinds: LootCache['kind'][] = ['supply', 'armory', 'supply', 'relic', 'armory', 'supply'];
+    const cacheCount = Math.round(48 * this.qualityScale);
+    for (let i = 0; i < cacheCount; i += 1) {
+      const x = 160 + hash(i, 613) * (this.worldW - 320);
+      const y = 160 + hash(619, i) * (this.worldH - 320);
+      if (this.isOpenRoad(x, y) || this.hitsObstacle(x, y, 14)) continue;
+      if (Math.hypot(x - cx, y - cy) < 260) continue;
+      const id = `cache-${i}`;
+      this.lootCaches.push({
+        id,
+        x: Math.round(x),
+        y: Math.round(y),
+        kind: cacheKinds[i % cacheKinds.length],
+        claimed: this.storage.data.lootedCaches.includes(id),
+      });
     }
 
     this.spawnVegetation(1500, 91);
@@ -1247,6 +1361,55 @@ export class Game {
     this.exitBuilding();
   }
 
+  /** Открывает тайник один раз и переносит добычу в постоянный профиль. */
+  private claimLootCache(cache: LootCache): void {
+    if (cache.claimed || !this.player) return;
+    cache.claimed = true;
+    const p = this.player;
+    const save = this.storage.data;
+    const claimed = [...new Set([...save.lootedCaches, cache.id])].slice(-256);
+    this.storage.update({ lootedCaches: claimed });
+
+    const coins = 50 + Math.floor(hash(cache.x, cache.y) * 90);
+    p.coins += coins;
+    this.storage.update({ coins: save.coins + Math.round(coins * 0.5) });
+    const rewards: string[] = [`+${coins} монет`];
+
+    if (cache.kind === 'armory') {
+      const locked = lockedWeapons(save.unlockedWeapons);
+      if (locked.length > 0) {
+        const weapon = locked[Math.floor(hash(cache.y, cache.x) * locked.length)];
+        this.storage.update({ unlockedWeapons: [...save.unlockedWeapons, weapon.id] });
+        rewards.push(`оружие «${weapon.name}»`);
+        this.storage.addMail('Тайник открытого мира', `В оружейном тайнике найдено оружие «${weapon.name}».`);
+      } else {
+        this.storage.update({ cases: save.cases + 1 });
+        rewards.push('кейс');
+      }
+    } else if (cache.kind === 'relic') {
+      const diamonds = 1 + Math.floor(hash(cache.x + 17, cache.y + 23) * 3);
+      this.storage.update({ diamonds: save.diamonds + diamonds });
+      rewards.push(`+${diamonds} алмазов`);
+      const modules = MODULES.filter((module) => !save.modules.includes(module.id));
+      if (modules.length > 0) {
+        const module = modules[Math.floor(hash(cache.y + 31, cache.x + 37) * modules.length)];
+        this.storage.update({ modules: [...save.modules, module.id] });
+        rewards.push(`модуль «${module.name}»`);
+        this.storage.addMail('Тайник открытого мира', `В тайнике найден модуль «${module.name}».`);
+      }
+    } else {
+      this.storage.update({ cases: save.cases + 1 });
+      p.hp = Math.min(p.stats.maxHp, p.hp + 30);
+      p.xp += 12;
+      rewards.push('кейс', '+30 HP', '+12 XP');
+    }
+
+    this.sound.levelUp();
+    this.addRing(cache.x, cache.y, 38, '#f0d68a');
+    this.callbacks.toast(`ТАЙНИК: ${rewards.join(' · ')}`);
+    this.emitHud();
+  }
+
   private exitBuilding(): void {
     const b = this.activeBuilding;
     if (!b || !this.player) return;
@@ -1258,7 +1421,8 @@ export class Game {
     this.pickups = this.pickups.filter((item) => item.x > this.interiorW || item.y > this.interiorH);
     this.player.x = this.streetX;
     this.player.y = this.streetY;
-    this.generateCity(true);
+    if (this.mode.openWorld) this.generateOpenWorld(true);
+    else this.generateCity(true);
     this.callbacks.toast(`${b.name}: ${b.clearedFloors}/${b.floors} ЭТАЖЕЙ · ${'★'.repeat(Math.min(5, b.clearedFloors))}`);
     this.emitHud();
   }
@@ -1267,7 +1431,7 @@ export class Game {
     const p = this.player;
     if (!p) return;
     this.interactHint = '';
-    if (!this.mode.city) return;
+    if (!this.mode.city && !this.mode.openWorld) return;
     const pressed = this.input.takePress(this.storage.data.bindings.interact) || this.interactRequested;
     this.interactRequested = false;
 
@@ -1286,6 +1450,30 @@ export class Game {
         this.interactHint = `ВЫЙТИ НА УЛИЦУ [${keyLabel(this.storage.data.bindings.interact)}]`;
         if (pressed) this.exitBuilding();
       }
+      return;
+    }
+
+    if (this.mode.openWorld && this.merchant && Math.hypot(p.x - this.merchant.x, p.y - this.merchant.y) < 46) {
+      this.interactHint = `МАГАЗИН ВРЕМЕННОГО ОРУЖИЯ [${keyLabel(this.storage.data.bindings.interact)}]`;
+      if (pressed) this.openTempShop();
+      return;
+    }
+
+    let nearestCache: LootCache | null = null;
+    let cacheDistance = 40;
+    for (const cache of this.lootCaches) {
+      if (cache.claimed) continue;
+      const distance = Math.hypot(p.x - cache.x, p.y - cache.y);
+      if (distance < cacheDistance) {
+        cacheDistance = distance;
+        nearestCache = cache;
+      }
+    }
+    if (nearestCache) {
+      const label = nearestCache.kind === 'armory' ? 'ОРУЖЕЙНЫЙ'
+        : nearestCache.kind === 'relic' ? 'РЕЛИКВИЯ' : 'ПОЛЕВОЙ';
+      this.interactHint = `ОБЫСКАТЬ ${label} ТАЙНИК [${keyLabel(this.storage.data.bindings.interact)}]`;
+      if (pressed) this.claimLootCache(nearestCache);
       return;
     }
 
@@ -1379,6 +1567,8 @@ export class Game {
     modeId = this.storage.data.modeId,
     profileLevel = this.storage.data.selectedLevel,
   ): void {
+    // Временное оружие из открытого мира не переносится в новый забег.
+    this.clearTempWeapon();
     const cls = getClass(classId);
     this.classId = classId;
     this.modeId = getMode(modeId).id;
@@ -1472,6 +1662,7 @@ export class Game {
   };
 
   dispose(): void {
+    this.clearTempWeapon();
     cancelAnimationFrame(this.raf);
   }
 
@@ -1496,7 +1687,70 @@ export class Game {
     if (this.state === 'playing') this.interactRequested = true;
   }
 
+  /** Снимок витрины торговца: монеты текущего забега и список товаров. */
+  tempShopState(): TempShopContext {
+    const list = weaponsForClass(this.classId);
+    const picks: WeaponDef[] = [];
+    for (const weapon of [list[1], list[2], list[3], list[list.length - 1]]) {
+      if (weapon && !picks.some((item) => item.id === weapon.id)) picks.push(weapon);
+    }
+    const offers: TempShopOffer[] = picks.map((weapon, index) => ({
+      weaponId: weapon.id,
+      name: weapon.name,
+      description: weapon.description,
+      price: 45 + index * 35,
+      color: weapon.color,
+      kind: weapon.kind,
+    }));
+    return {
+      coins: this.player?.coins ?? 0,
+      offers,
+      activeWeaponId: this.tempWeapon?.weaponId ?? null,
+    };
+  }
+
+  /** Покупка списывает монеты забега и сохраняется в локальной БД. */
+  buyTempWeapon(id: string): boolean {
+    if (this.state !== 'paused' || !this.player || !this.mode.openWorld) return false;
+    const offer = this.tempShopState().offers.find((item) => item.weaponId === id);
+    if (!offer) return false;
+    if (this.player.coins < offer.price) {
+      this.callbacks.toast('НЕДОСТАТОЧНО МОНЕТ');
+      this.sound.click();
+      return false;
+    }
+    const weapon = getWeapon(id);
+    if (weapon.classId !== this.classId) return false;
+    this.player.coins -= offer.price;
+    this.weapon = weapon;
+    const entry: TempWeaponEntry = {
+      weaponId: weapon.id,
+      classId: this.classId,
+      purchasedAt: Date.now(),
+    };
+    this.tempWeapon = entry;
+    const db = loadTempShop();
+    saveTempShop({ active: entry, purchases: [...db.purchases, entry].slice(-24) });
+    this.sound.levelUp();
+    this.callbacks.toast(`ВРЕМЕННОЕ ОРУЖИЕ: ${weapon.name.toUpperCase()}`);
+    this.emitHud();
+    return true;
+  }
+
+  private openTempShop(): void {
+    if (this.state !== 'playing') return;
+    this.sound.click();
+    this.callbacks.tempShop(this.tempShopState());
+  }
+
+  /** Вызывается при старте/выходе: временные покупки не переживают забег. */
+  private clearTempWeapon(): void {
+    this.tempWeapon = null;
+    clearTempShop();
+  }
+
   toMenu(): void {
+    this.clearTempWeapon();
     this.state = 'idle';
   }
 
@@ -1699,7 +1953,7 @@ export class Game {
       p.facing = Math.atan2(this.camY + pointer.y - p.y, this.camX + pointer.x - p.x);
     }
 
-    if (this.mode.city) {
+    if (this.mode.city || this.mode.openWorld) {
       this.updateInteract();
       this.checkInteriorProgress();
     } else if (this.dungeon?.active) {
@@ -1867,6 +2121,8 @@ export class Game {
       bleedDamage: 0,
       hitCooldown: 0,
       attackTimer: 1 + Math.random(),
+      spitTimer: 1.2 + Math.random() * 1.8,
+      aggro: this.mode.openWorld ? 0 : AGGRO_MEMORY,
       wobble: Math.random() * Math.PI * 2,
       dead: false,
     });
@@ -1878,6 +2134,8 @@ export class Game {
       enemy.flash = Math.max(0, enemy.flash - dt);
       enemy.hitCooldown = Math.max(0, enemy.hitCooldown - dt);
       enemy.attackTimer -= dt;
+      enemy.spitTimer = Math.max(0, enemy.spitTimer - dt);
+      enemy.aggro = Math.max(0, enemy.aggro - dt);
       enemy.wobble += dt * 3;
 
       if (enemy.burn > 0) {
@@ -1910,8 +2168,15 @@ export class Game {
       const distance = Math.max(1, Math.hypot(dx, dy));
       const speed = enemy.speed * (enemy.slow > 0 ? 0.55 : 1);
       enemy.slow = Math.max(0, enemy.slow - dt);
+      // На улице открытого мира зомби не видят игрока сами: интерес держится только на звуке выстрела.
+      // Внутри здания-данжа враги обычные — иначе зачистить этаж было бы невозможно.
+      const quietOpenWorld = this.mode.openWorld && !this.activeBuilding;
+      const provoked = !quietOpenWorld || enemy.aggro > 0 || distance < 22;
+      // Ближняя оборона не требует выстрела: подошедшего вплотную зомби всё равно кусает и плюётся.
+      // При этом издалека враг по-прежнему не поднимает агро без звука выстрела.
+      const canSpit = provoked || (quietOpenWorld && distance < 38);
 
-      if (enemy.def.ranged && distance < 165 && distance > 45 && enemy.attackTimer <= 0) {
+      if (provoked && enemy.def.ranged && distance < 165 && distance > 45 && enemy.attackTimer <= 0) {
         const projectileSpeed = 82;
         this.enemyProjectiles.push({
           x: enemy.x,
@@ -1920,13 +2185,29 @@ export class Game {
           vy: (dy / distance) * projectileSpeed,
           damage: enemy.def.damage * this.mode.damageMul * this.location.difficulty * this.interiorEnemyScale,
           life: 2.6,
+          radius: 4,
+          color: '#d06a4a',
           status: enemy.def.status,
         });
         enemy.attackTimer = 2.1 + Math.random() * 0.6;
-      } else if (enemy.def.ranged && distance < 60) {
-        enemy.x -= (dx / distance) * speed * dt * 0.6;
-        enemy.y -= (dy / distance) * speed * dt * 0.6;
-      } else if (distance > 22) {
+      } else if (canSpit && enemy.def.spit && distance < GUN_NOISE_RADIUS && distance > 24 && enemy.spitTimer <= 0) {
+        // Ядовитый плювок: урон приходит снарядом, а не только при касании.
+        const projectileSpeed = 78;
+        this.enemyProjectiles.push({
+          x: enemy.x,
+          y: enemy.y,
+          vx: (dx / distance) * projectileSpeed,
+          vy: (dy / distance) * projectileSpeed,
+          damage: enemy.def.damage * 0.6 * (1 + (this.wave - 1) * 0.04)
+            * this.mode.damageMul * this.location.difficulty * this.interiorEnemyScale,
+          life: 2.2,
+          radius: 5,
+          color: STATUS_COLORS.poison,
+          status: enemy.def.status,
+        });
+        enemy.spitTimer = 2.4 + Math.random() * 0.8;
+        this.addRing(enemy.x, enemy.y, 7, STATUS_COLORS.poison);
+      } else if (provoked && distance > 22) {
         const wobbleX = Math.sin(enemy.wobble) * 0.18;
         const wobbleY = Math.cos(enemy.wobble * 0.8) * 0.18;
         this.moveWithCollision(
@@ -1938,7 +2219,11 @@ export class Game {
         this.clampToArea(enemy, enemy.size * 0.4);
       }
 
-      if (distance < enemy.size * 0.6 + PLAYER_RADIUS && enemy.hitCooldown <= 0 && p.invuln <= 0) {
+      // Контактный урон есть у ВСЕХ врагов, включая стрелков и плюющихся зомби.
+      // Спрайт врага 32 px, поэтому зона касания немного больше физического радиуса.
+      const touchDistance = Math.hypot(p.x - enemy.x, p.y - enemy.y);
+      if (touchDistance < enemy.size * 0.75 + PLAYER_RADIUS + 3
+        && enemy.hitCooldown <= 0 && p.invuln <= 0) {
         this.damagePlayer(enemy.def.damage * (1 + (this.wave - 1) * 0.04)
           * this.mode.damageMul * this.location.difficulty * this.interiorEnemyScale);
         this.applyStatus(enemy.def.status);
@@ -1993,7 +2278,7 @@ export class Game {
       shot.life -= dt;
       shot.x += shot.vx * dt;
       shot.y += shot.vy * dt;
-      if (Math.hypot(shot.x - p.x, shot.y - p.y) < PLAYER_RADIUS + 4 && p.invuln <= 0) {
+      if (Math.hypot(shot.x - p.x, shot.y - p.y) < PLAYER_RADIUS + shot.radius && p.invuln <= 0) {
         this.damagePlayer(shot.damage);
         this.applyStatus(shot.status);
         shot.life = 0;
@@ -2026,8 +2311,13 @@ export class Game {
       }
       if (distance < PLAYER_RADIUS + 5) {
         item.life = 0;
-        if (item.kind === 'xp') p.xp += item.value;
-        else if (item.kind === 'coin') p.coins += item.value;
+        if (item.kind === 'xp') {
+          p.xp += item.value;
+          this.effects.push({
+            kind: 'text', x: item.x, y: item.y - 8,
+            life: 0.6, max: 0.6, text: `+${item.value} XP`, color: '#c8a8ff',
+          });
+        } else if (item.kind === 'coin') p.coins += item.value;
         else if (item.kind === 'chest') this.openLootChest(item.x, item.y);
         else if (item.kind === 'light') this.collectLight(item);
         else if (item.kind === 'antidote') this.collectAntidote(item);
@@ -2099,6 +2389,17 @@ export class Game {
     return best;
   }
 
+  /** Звук выстрела в открытом мире: раздаёт агро зомби в радиусе 7 клеток вокруг игрока. */
+  private emitGunNoise(x: number, y: number): void {
+    if (!this.mode.openWorld) return;
+    for (const enemy of this.enemies) {
+      if (enemy.dead) continue;
+      if (Math.hypot(enemy.x - x, enemy.y - y) > GUN_NOISE_RADIUS) continue;
+      enemy.aggro = AGGRO_MEMORY;
+      if (enemy.def.spit) enemy.spitTimer = Math.min(enemy.spitTimer, 0.6);
+    }
+  }
+
   private fire(p: Player): void {
     const w = this.weapon;
     const color = this.shotColor ?? w.color;
@@ -2108,7 +2409,9 @@ export class Game {
     const speed = s.projectileSpeed * w.speedMul;
     const count = ['melee', 'nova', 'mine'].includes(w.kind) ? w.count : w.count + s.projectileCount;
     const angle = p.facing;
-    this.sound.shoot(w.kind, w.id);
+    this.sound.shoot(w.kind, w.id, { source: 'weapon', aoe: w.aoe });
+    // Ближний бой тихий: сундуки и данжи можно чистить, не поднимая агро.
+    if (w.kind !== 'melee') this.emitGunNoise(p.x, p.y);
 
     if (w.kind === 'melee') {
       const radius = (w.radius ?? 36) * s.area;
@@ -2236,7 +2539,7 @@ export class Game {
     if (!p || this.state !== 'playing' || (this.cooldowns.dash ?? 0) > 0) return false;
     this.cooldowns.dash = DASH_COOLDOWN;
     this.dash(64, 0.35);
-    this.sound.shoot('bolt');
+    this.sound.shoot('bolt', undefined, { source: 'dash' });
     return true;
   }
 
@@ -2487,7 +2790,11 @@ export class Game {
     }
 
     this.cooldowns[ability.id] = ability.cooldown;
-    this.sound.shoot(ability.id.includes('nuke') || ability.id.includes('meteor') ? 'explosive' : 'nova');
+    this.sound.shoot(
+      ability.id.includes('nuke') || ability.id.includes('meteor') ? 'explosive' : 'nova',
+      undefined,
+      { source: 'ability' },
+    );
     this.sound.ability();
     this.callbacks.toast(`${ability.icon} ${ability.name}`);
     return true;
@@ -2798,6 +3105,7 @@ export class Game {
     else this.sound.death();
     const result = this.result();
     if (!result) return;
+    this.clearTempWeapon();
     const campaign = this.mode.city
       ? { cleared: false, nextUnlocked: false }
       : this.storage.completeCampaignLevel(result.campaignLevel, result.time, result.kills);
@@ -3005,13 +3313,9 @@ export class Game {
       const x = Math.round(item.x - camX);
       const y = Math.round(item.y - camY + Math.sin(item.bob) * 1.5);
       if (x < -8 || x > W + 8 || y < -8 || y > H + 8) continue;
-      if (item.kind === 'xp') {
-        ctx.fillStyle = item.value > 1 ? '#c9a24b' : '#6f9c62';
-        ctx.fillRect(x - 1, y - 3, 3, 6);
-        ctx.fillRect(x - 3, y - 1, 6, 3);
-        ctx.fillStyle = '#e8e2c8';
-        ctx.fillRect(x - 1, y - 1, 1, 1);
-      } else if (item.kind === 'coin') {
+      // XP-иконки рисуем после эффектов крови, иначе они тонут в луже на месте убийства.
+      if (item.kind === 'xp') continue;
+      if (item.kind === 'coin') {
         ctx.fillStyle = '#c9a24b';
         ctx.fillRect(x - 2, y - 2, 4, 4);
         ctx.fillStyle = '#f0d68a';
@@ -3102,8 +3406,13 @@ export class Game {
     for (const shot of this.enemyProjectiles) {
       const x = Math.round(shot.x - camX);
       const y = Math.round(shot.y - camY);
-      ctx.fillStyle = '#d06a4a';
-      ctx.fillRect(x - 2, y - 2, 4, 4);
+      const r = shot.radius;
+      ctx.globalAlpha = 0.35;
+      ctx.fillStyle = shot.color;
+      ctx.fillRect(x - r - 1, y - r - 1, (r + 1) * 2, (r + 1) * 2);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = shot.color;
+      ctx.fillRect(x - r / 2, y - r / 2, r, r);
       ctx.fillStyle = '#f0c07a';
       ctx.fillRect(x - 1, y - 1, 2, 2);
     }
@@ -3122,6 +3431,29 @@ export class Game {
     }
 
     this.drawEffects(camX, camY);
+
+    // Поверх крови: иконки опыта остаются заметными прямо на месте убийства.
+    for (const item of this.pickups) {
+      if (item.kind !== 'xp') continue;
+      const x = Math.round(item.x - camX);
+      const y = Math.round(item.y - camY + Math.sin(item.bob) * 1.5);
+      if (x < -8 || x > W + 8 || y < -8 || y > H + 8) continue;
+      const pulse = 0.5 + 0.5 * Math.sin(this.time * 7 + item.bob);
+      // Ромб-кристалл вместо креста: крест читался как аптечка, а не опыт.
+      const core = item.value > 2 ? '#d7a9ff' : '#8fd7ff';
+      ctx.globalAlpha = 0.16 + pulse * 0.2;
+      ctx.fillStyle = core;
+      ctx.fillRect(x - 6, y - 6, 12, 12);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = core;
+      ctx.fillRect(x, y - 5, 1, 1);
+      ctx.fillRect(x - 1, y - 4, 3, 2);
+      ctx.fillRect(x - 2, y - 2, 5, 4);
+      ctx.fillRect(x - 1, y + 2, 3, 2);
+      ctx.fillRect(x, y + 4, 1, 1);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(x - 1, y - 2, 2, 2);
+    }
 
     if (this.player) {
       const p = this.player;
@@ -3457,6 +3789,11 @@ export class Game {
       ctx.fillStyle = '#e0c78d';
       ctx.fillRect(px(building.x + building.w / 2) - 1, py(building.y + building.h / 2) - 1, 2, 2);
     }
+    for (const cache of this.lootCaches) {
+      if (cache.claimed) continue;
+      ctx.fillStyle = cache.kind === 'relic' ? '#9fd8e8' : '#f0d68a';
+      ctx.fillRect(Math.round(px(cache.x)) - 1, Math.round(py(cache.y)) - 1, 2, 2);
+    }
 
     if (this.dungeon?.active) {
       ctx.strokeStyle = '#c9a24b';
@@ -3486,7 +3823,7 @@ export class Game {
     for (const pickup of this.pickups) {
       ctx.fillStyle = pickup.kind === 'antidote'
         ? ANTIDOTE_COLOR[pickup.antidote ?? 'poison']
-        : pickup.kind === 'xp' ? '#6f9c62' : pickup.kind === 'light' ? '#d99b46' : '#c9a24b';
+        : pickup.kind === 'xp' ? '#c8a8ff' : pickup.kind === 'light' ? '#d99b46' : '#c9a24b';
       ctx.fillRect(Math.round(px(pickup.x)), Math.round(py(pickup.y)), pickup.kind === 'antidote' ? 2 : 1, 1);
     }
     if (this.graphics.animals) {
@@ -3622,7 +3959,7 @@ export class Game {
           break;
         case 'building': {
           const building = this.cityBuildings.find((b) => b.x === obstacle.x && b.y === obstacle.y);
-          if (!building) {
+          if (!building || building.openWorld) {
             // Дома открытого мира рисуются настоящими CC0-тайлами µFantasy.
             this.drawCc0House(x, y, obstacle.w, obstacle.h, Math.floor(hash(obstacle.x, obstacle.y) * 3));
             break;
@@ -3662,25 +3999,37 @@ export class Game {
             ctx.fillStyle = '#d99b46';
             ctx.fillRect(x + obstacle.w - 28, y - 16, 8, 5);
           }
+          // Крышу и стены рисуем только полностью непрозрачными тайлами атласа:
+          // полупрозрачные стыковые ячейки давали «дыры» и кривые швы при движении камеры.
+          const roofAtlas = cc0Image(CC0_PATHS.topdown);
+          if (roofAtlas) {
+            const roofTiles = [[1, 0], [4, 1], [4, 0]];
+            for (let col = 0; col < Math.ceil(obstacle.w / 16); col += 1) {
+              const tile = roofTiles[col % roofTiles.length];
+              ctx.drawImage(roofAtlas, tile[0] * 8, tile[1] * 8, 8, 8, x + col * 16, y + 3, 16, 16);
+            }
+            for (let col = 0; col < Math.ceil(obstacle.w / 16); col += 1) {
+              for (let row = 0; y + 20 + row * 16 < y + obstacle.h - 22; row += 1) {
+                ctx.drawImage(
+                  roofAtlas, (col % 5) * 8, (3 + (row % 4)) * 8, 8, 8,
+                  x + col * 16, y + 20 + row * 16, 16, 16,
+                );
+              }
+            }
+            ctx.globalAlpha = 0.42;
+            ctx.fillStyle = '#0a0c10';
+            ctx.fillRect(x, y + 3, obstacle.w, 16);
+            ctx.globalAlpha = 1;
+          }
           const floors = building?.floors ?? 3;
           for (let f = 0; f < floors; f += 1) {
-            const wy = y + 14 + f * Math.floor((obstacle.h - 34) / Math.max(1, floors));
+            const wy = y + 26 + f * Math.floor((obstacle.h - 48) / Math.max(1, floors));
             for (let wx = x + 18; wx < x + obstacle.w - 18; wx += 30) {
               ctx.fillStyle = (f + wx) % 3 === 0 ? accent : '#4b525b';
               ctx.fillRect(wx, wy, 9, 8);
               ctx.fillStyle = '#0d0f12';
               ctx.fillRect(wx + 4, wy, 1, 8);
             }
-          }
-          const roofAtlas = cc0Image(CC0_PATHS.topdown);
-          if (roofAtlas) {
-            for (let wx = x; wx < x + obstacle.w; wx += 16) {
-              roofAtlas && ctx.drawImage(roofAtlas, ((wx / 16) % 5 + 1) * 8, 0, 8, 8, wx, y + 3, 16, 16);
-            }
-            ctx.globalAlpha = 0.5;
-            ctx.fillStyle = '#0a0c10';
-            ctx.fillRect(x, y, obstacle.w, 19);
-            ctx.globalAlpha = 1;
           }
           ctx.fillStyle = '#101317';
           ctx.fillRect(x + obstacle.w / 2 - 13, y + obstacle.h - 22, 26, 22);
@@ -3763,12 +4112,63 @@ export class Game {
   }
 
 
-  /** Входы в здания, лестницы, выходы и сундуки городского режима. */
+  /** Входы в здания, лестницы, выходы и сундуки города и открытого мира. */
   private drawCityInteractables(camX: number, camY: number): void {
     const ctx = this.ctx;
-    if (!this.mode.city) return;
+    if (!this.mode.city && !this.mode.openWorld) return;
 
     if (!this.activeBuilding) {
+      if (this.merchant) {
+        const x = Math.round(this.merchant.x - camX);
+        const y = Math.round(this.merchant.y - camY);
+        if (x > -30 && x < W + 30 && y > -30 && y < H + 30) {
+          const pulse = 0.6 + Math.sin(this.time * 4) * 0.25;
+          ctx.globalAlpha = 0.22 * pulse;
+          ctx.fillStyle = '#f0d68a';
+          ctx.fillRect(x - 20, y - 24, 40, 40);
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = '#050608';
+          ctx.fillRect(x - 9, y - 12, 18, 18);
+          ctx.fillStyle = '#4a3c6b';
+          ctx.fillRect(x - 7, y - 10, 14, 16);
+          ctx.fillStyle = '#2a2238';
+          ctx.fillRect(x - 5, y - 14, 10, 7);
+          ctx.fillStyle = '#d9b17a';
+          ctx.fillRect(x - 3, y - 10, 2, 2);
+          ctx.fillRect(x + 2, y - 10, 2, 2);
+          ctx.fillStyle = '#f0d68a';
+          ctx.fillRect(x - 1, y - 22, 2, 8);
+          ctx.fillRect(x - 5, y - 20, 10, 4);
+          ctx.font = '7px monospace';
+          ctx.textAlign = 'center';
+          ctx.fillText('ТОРГОВЕЦ', x, y - 27);
+        }
+      }
+      for (const cache of this.lootCaches) {
+        if (cache.claimed) continue;
+        const x = Math.round(cache.x - camX);
+        const y = Math.round(cache.y - camY);
+        if (x < -24 || x > W + 24 || y < -24 || y > H + 24) continue;
+        const color = cache.kind === 'armory' ? '#d9b17a'
+          : cache.kind === 'relic' ? '#9fd8e8' : '#a9c47c';
+        const pulse = 0.5 + Math.sin(this.time * 4 + cache.x) * 0.25;
+        ctx.globalAlpha = 0.2 * pulse;
+        ctx.fillStyle = color;
+        ctx.fillRect(x - 14, y - 14, 28, 28);
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = '#050608';
+        ctx.fillRect(x - 8, y - 6, 16, 12);
+        ctx.fillStyle = '#5a4632';
+        ctx.fillRect(x - 7, y - 5, 14, 10);
+        ctx.fillStyle = color;
+        ctx.fillRect(x - 7, y - 5, 14, 2);
+        ctx.fillRect(x - 1, y - 5, 2, 10);
+        ctx.fillStyle = '#f0d68a';
+        ctx.fillRect(x - 1, y - 1, 2, 2);
+        ctx.font = '7px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('ТАЙНИК', x, y - 10);
+      }
       for (const building of this.cityBuildings) {
         const x = Math.round(building.doorX - camX);
         const y = Math.round(building.doorY - camY);
@@ -3925,24 +4325,36 @@ export class Game {
   /** Дом из тайлов µFantasy (CC0) с тёмной прорисовкой поверх для стиля Некрополя. */
   private drawCc0House(x: number, y: number, w: number, h: number, variant = 0): void {
     const ctx = this.ctx;
+    // Текстуры µFantasy (CC0): 8×8 исходные ячейки, в игре тайл = 16 world units.
+    // Используем локальный номер колонки: иначе сдвиг камеры «заставлял» крышу ползти.
     const atlas = cc0Image(CC0_PATHS.topdown);
+    const cols = Math.ceil(w / 16);
+    const roofRows = h >= 64 ? 2 : 1;
+    const roofH = roofRows * 16;
     ctx.fillStyle = '#050607';
     ctx.fillRect(x - 3, y - 3, w + 6, h + 6);
     ctx.fillStyle = '#2b211b';
     ctx.fillRect(x, y, w, h);
     if (atlas) {
-      // Крыша: 8x8 тайлы из верхних рядов атласа, увеличенные до 16x16.
-      for (let row = 0; row < 2; row += 1) {
-        for (let col = 0; col < Math.ceil(w / 16); col += 1) {
-          const sx = ((col + variant + row) % 5 + 1) * 8;
-          const sy = (row === 0 ? 0 : 1) * 8;
-          ctx.drawImage(atlas, sx, sy, 8, 8, x + col * 16, y + row * 16, 16, 16);
+      // Только непрозрачные ячейки атласа: стыковые тайлы row0/row2 имеют alpha < 1
+      // и выглядели как дыры и «съехавшие» швы на маленьких домах 48×40.
+      const roofTiles = [[1, 0], [4, 1], [4, 0]];
+      for (let row = 0; row < roofRows; row += 1) {
+        for (let col = 0; col < cols; col += 1) {
+          const tile = roofTiles[(col + row + variant) % roofTiles.length];
+          ctx.drawImage(atlas, tile[0] * 8, tile[1] * 8, 8, 8, x + col * 16, y + row * 16, 16, 16);
         }
       }
-      for (let col = 0; col < Math.ceil(w / 16); col += 1) {
-        ctx.drawImage(atlas, (col % 5) * 8, 16, 8, 8, x + col * 16, y + 32, 16, Math.max(8, h - 32));
+      // Каменные стены: ряды 3–6, колонки 0–4 — сплошные тайлы без прозрачных краёв.
+      for (let col = 0; col < cols; col += 1) {
+        for (let row = 0; y + roofH + row * 16 < y + h; row += 1) {
+          ctx.drawImage(
+            atlas, ((col + variant) % 5) * 8, (3 + ((row + variant) % 4)) * 8, 8, 8,
+            x + col * 16, y + roofH + row * 16, 16, 16,
+          );
+        }
       }
-      ctx.globalAlpha = 0.45;
+      ctx.globalAlpha = 0.28;
       ctx.fillStyle = '#0d0a09';
       ctx.fillRect(x, y, w, h);
       ctx.globalAlpha = 1;
@@ -3951,17 +4363,19 @@ export class Game {
     ctx.fillRect(x, y, w, 2);
     ctx.fillRect(x, y, 2, h);
     ctx.fillRect(x + w - 2, y, 2, h);
+    ctx.fillRect(x, y + roofH, w, 1);
+    // Дверь и окна рисуются поверх стен и тайлов, чтобы вход читался с любого расстояния.
     ctx.fillStyle = '#5a4632';
-    const doorW = 12;
-    ctx.fillRect(x + w / 2 - doorW / 2, y + h - 12, doorW, 12);
+    const doorW = 14;
+    ctx.fillRect(x + w / 2 - doorW / 2, y + h - 14, doorW, 14);
     ctx.fillStyle = '#1b1512';
-    ctx.fillRect(x + w / 2 - doorW / 2 + 2, y + h - 10, doorW - 4, 10);
+    ctx.fillRect(x + w / 2 - doorW / 2 + 2, y + h - 12, doorW - 4, 12);
     ctx.fillStyle = '#d99b46';
-    ctx.fillRect(x + 6, y + h - 18, 5, 4);
-    ctx.fillRect(x + w - 11, y + h - 18, 5, 4);
+    ctx.fillRect(x + 5, y + h - 20, 6, 5);
+    ctx.fillRect(x + w - 11, y + h - 20, 6, 5);
     ctx.fillStyle = '#f0d68a';
-    ctx.fillRect(x + 8, y + h - 17, 2, 2);
-    ctx.fillRect(x + w - 9, y + h - 17, 2, 2);
+    ctx.fillRect(x + 7, y + h - 19, 2, 2);
+    ctx.fillRect(x + w - 9, y + h - 19, 2, 2);
   }
 
   private drawGround(camX: number, camY: number): void {
@@ -4016,8 +4430,8 @@ export class Game {
           cellSize = atlas === stoneFloor ? 16 : 8;
           const index = this.biomeIndexAt(tx, ty);
           const cells = index === 4
-            ? [[0, 3], [1, 3], [5, 3], [0, 6], [2, 6]]
-            : [[0, 3], [1, 3], [2, 3], [3, 3], [4, 3], [5, 3], [0, 6], [2, 6], [3, 6]];
+            ? [[0, 3], [1, 3], [2, 6], [0, 6], [4, 3]]
+            : [[0, 3], [1, 3], [2, 3], [3, 3], [4, 3], [0, 6], [2, 6], [3, 6], [4, 6]];
           const cell = cells[Math.floor(hash(gx * 5, gy * 11) * cells.length)];
           sx = cell[0] * cellSize;
           sy = cell[1] * cellSize;

@@ -339,7 +339,10 @@ html, body {
 }
 
 .bar-hp i { background: linear-gradient(90deg, #6e2323, var(--game-red)); }
-.bar-xp i { background: linear-gradient(90deg, #4a6d8a, #86b6d4); }
+.bar-xp i {
+  background: linear-gradient(90deg, #5f4bb0, #c8a8ff);
+  box-shadow: 0 0 8px rgba(200, 168, 255, 0.65);
+}
 
 .bar span {
   position: absolute;
@@ -470,6 +473,36 @@ html, body {
 }
 
 .overlay.active { display: flex; }
+
+/* Ползунок общей громкости на экране паузы (ESC). */
+.pause-volume {
+  position: absolute;
+  top: calc(var(--game-unit) * 1.1);
+  left: calc(var(--game-unit) * 1.1);
+  display: flex;
+  align-items: center;
+  gap: calc(var(--game-unit) * 0.5);
+  padding: calc(var(--game-unit) * 0.45) calc(var(--game-unit) * 0.6);
+  background: rgba(11, 13, 16, 0.94);
+  border: 1px solid var(--game-border);
+  box-shadow: 2px 2px 0 #050608;
+  font-size: 0.85em;
+  pointer-events: auto;
+}
+
+.pause-volume span { color: var(--game-muted); white-space: nowrap; }
+
+.pause-volume input[type="range"] {
+  width: calc(var(--game-unit) * 11);
+  accent-color: var(--game-gold);
+  cursor: pointer;
+}
+
+.pause-volume b {
+  min-width: 3ch;
+  color: var(--game-gold);
+  text-align: right;
+}
 
 .overlay.menu-overlay {
   background: rgba(5, 6, 8, 0.58);
@@ -735,6 +768,29 @@ html, body {
 .stat-list span:nth-child(odd) { color: var(--game-muted); }
 .stat-list span:nth-child(even) { color: var(--game-text); text-align: right; }
 
+/* Топ игроков: временные строки до подключения серверного рейтинга. */
+.leaderboard {
+  display: grid;
+  gap: calc(var(--game-unit) * 0.2);
+  max-width: calc(var(--game-unit) * 30);
+  margin: calc(var(--game-unit) * 0.5) auto;
+  text-align: left;
+  font-size: 0.86em;
+}
+
+.leaderboard-row {
+  display: grid;
+  grid-template-columns: calc(var(--game-unit) * 1.8) 1fr auto;
+  gap: calc(var(--game-unit) * 0.4);
+  padding: calc(var(--game-unit) * 0.18) calc(var(--game-unit) * 0.5);
+  background: rgba(11, 13, 16, 0.72);
+  border: 1px solid var(--game-border);
+}
+
+.leaderboard-row:first-child { border-color: var(--game-gold); color: var(--game-gold); }
+.leaderboard-row span:first-child { color: var(--game-muted); }
+.leaderboard-row b { color: var(--game-gold); }
+
 .hint {
   font-size: 0.78em;
   color: var(--game-muted);
@@ -832,7 +888,8 @@ html, body {
   position: relative;
   z-index: 1;
   font-size: 0.72em;
-  color: var(--game-text);
+  color: #eafff0;
+  text-shadow: 0 0 6px rgba(141, 255, 173, 0.9), 1px 1px 0 #000;
 }
 
 .level-grid {
@@ -1148,6 +1205,31 @@ html, body {
 }
 
 .shop-grid--cases { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+/* Прокрутка кейсов: карусель с прилипанием по карточкам. */
+.case-carousel {
+  display: flex;
+  gap: calc(var(--game-unit) * 0.5);
+  margin: calc(var(--game-unit) * 0.8) 0 calc(var(--game-unit) * 0.4);
+  padding-bottom: calc(var(--game-unit) * 0.4);
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: thin;
+  scrollbar-color: var(--game-gold) transparent;
+}
+
+.case-carousel .shop-card {
+  flex: 0 0 calc(var(--game-unit) * 17);
+  scroll-snap-align: start;
+}
+
+.case-nav { justify-content: center; margin-bottom: calc(var(--game-unit) * 0.5); }
+
+/* Товары торговца: те же карточки, но кликабельные и с состоянием «недостаточно монет». */
+.temp-shop-card { font-family: inherit; color: inherit; cursor: pointer; }
+.temp-shop-card:disabled { opacity: 0.55; cursor: default; transform: none; }
+.temp-shop-card:disabled:hover { transform: none; }
+.temp-shop-card .price { color: var(--game-gold); font-weight: bold; }
 
 .shop-card {
   position: relative;

@@ -254,7 +254,7 @@ WEAPONS.push(...generateWeapons());
 
 export const ENEMIES: Record<string, EnemyDef> = {
   skeleton: { id: 'skeleton', name: 'Скелет', hp: 20, speed: 24, damage: 8, xp: 1, size: 11, color: '#c9c4b4' },
-  zombie: { id: 'zombie', name: 'Зомби', hp: 46, speed: 15, damage: 12, xp: 2, size: 13, color: '#6f7a62', status: 'poison' },
+  zombie: { id: 'zombie', name: 'Зомби', hp: 46, speed: 15, damage: 12, xp: 2, size: 13, color: '#6f7a62', status: 'poison', spit: true },
   vampire: { id: 'vampire', name: 'Вампир', hp: 28, speed: 36, damage: 10, xp: 2, size: 11, color: '#933b47', lifesteal: 2, status: 'infection' },
   ghost: { id: 'ghost', name: 'Призрак', hp: 22, speed: 30, damage: 7, xp: 2, size: 11, color: '#9fb6c4', ghost: true, status: 'infection' },
   cultist: { id: 'cultist', name: 'Культист', hp: 30, speed: 18, damage: 9, xp: 3, size: 11, color: '#8a69ad', ranged: true, status: 'burn' },
@@ -574,13 +574,29 @@ export const getSkin = (id: string | null): SkinDef | null => SKINS.find((s) => 
 export const getModule = (id: string): ModuleDef | undefined => MODULES.find((m) => m.id === id);
 export const getMode = (id: string): GameModeDef => GAME_MODES.find((m) => m.id === id) ?? GAME_MODES[0];
 
+const CASE_DIAMONDS: Record<RarityId, number> = {
+  common: 1, rare: 2, epic: 4, legendary: 8, mythic: 16, ultra: 32,
+};
+
 export function rollCase(
   unlockedWeapons: string[],
   ownedSkins: string[],
   ownedModules: string[],
   forcedRarity?: RarityId,
+  chances: { coins?: number; diamonds?: number } = {},
 ): CaseReward {
   const rarity = forcedRarity ?? rollRarity();
+  const coinChance = chances.coins ?? 0.12;
+  const diamondChance = chances.diamonds ?? 0.03;
+  const roll = Math.random();
+  if (roll < diamondChance) {
+    const amount = CASE_DIAMONDS[rarity];
+    return { kind: 'diamonds', id: 'diamonds', amount, name: `${amount} алмаз${amount === 1 ? '' : 'ов'}`, rarity };
+  }
+  if (roll < diamondChance + coinChance) {
+    const coins = Math.max(60, Math.round(120 * RARITIES[rarity].priceMul));
+    return { kind: 'coins', id: 'coins', amount: coins, name: `${coins} монет`, rarity };
+  }
   const pool: CaseReward[] = [];
   for (const weapon of lockedWeapons(unlockedWeapons)) {
     if (rarityOfWeapon(weapon.id) === rarity) {
@@ -648,5 +664,5 @@ export function rollPremiumCase(
 ): CaseReward {
   const roll = Math.random() * 100;
   const rarity: RarityId = roll < 0.01 ? 'ultra' : roll < 1 ? 'mythic' : roll < 5 ? 'legendary' : 'epic';
-  return rollCase(unlockedWeapons, ownedSkins, ownedModules, rarity);
+  return rollCase(unlockedWeapons, ownedSkins, ownedModules, rarity, { coins: 0.05, diamonds: 0.06 });
 }

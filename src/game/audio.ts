@@ -46,8 +46,18 @@ interface WeaponVoice {
   tail: number;
   /** Количество грязного шума в атаке. */
   grit: number;
+  /** Индивидуальный тембровый оттенок из ID (0..1). */
+  accent: number;
+  /** Сдвиг фазы для хвостов и дополнительных слоёв (0..1). */
+  phase: number;
   metal: boolean;
   undead: boolean;
+}
+
+/** Дополнительная информация о выстреле: источник радиуса действия. */
+export interface ShootOptions {
+  source?: 'weapon' | 'dash' | 'ability';
+  aoe?: number;
 }
 
 const CLASS_FAMILY: Record<string, WeaponFamily> = {
@@ -107,12 +117,27 @@ export class Sound {
 
   private musicEnabled = true;
   private musicVolume = 0.7;
+  private masterVolume = 1;
   private musicScene: MusicScene = 'none';
   private musicTimer = 0;
   private musicNext = 0;
   private musicStep = 0;
 
   muted = false;
+
+  /** Итоговый master-gain: общий ползунок уменьшает вообще все звуки и музыку. */
+  private masterGainValue(): number {
+    return this.muted ? 0 : MASTER_VOLUME * this.masterVolume;
+  }
+
+  /** Общая громкость игры. Влияет на выстрелы, шаги, музыку и UI-звуки. */
+  setMasterVolume(value: number): void {
+    const numeric = Number(value);
+    this.masterVolume = Number.isFinite(numeric) ? Math.min(1, Math.max(0, numeric)) : 1;
+    if (this.master && this.ctx) {
+      this.master.gain.setTargetAtTime(this.masterGainValue(), this.ctx.currentTime, 0.02);
+    }
+  }
 
   unlock(): void {
     const ctx = this.ensure();
@@ -130,7 +155,7 @@ export class Sound {
 
       // Общий микшер: мягкий сатуратор перед компрессором даёт громкость без клиппинга.
       const master = ctx.createGain();
-      master.gain.value = MASTER_VOLUME;
+      master.gain.value = this.masterGainValue();
       const shaper = ctx.createWaveShaper();
       shaper.curve = this.makeDriveCurve() as Float32Array<ArrayBuffer>;
       shaper.oversample = '2x';
@@ -250,7 +275,7 @@ export class Sound {
   private ready(key: string, minGap: number): number | null {
     const ctx = this.ensure();
     if (!ctx) return null;
-    if (this.master) this.master.gain.value = this.muted ? 0 : MASTER_VOLUME;
+    if (this.master) this.master.gain.value = this.masterGainValue();
     if (this.muted || ctx.state !== 'running') return null;
     const now = ctx.currentTime;
     const last = this.lastPlayed.get(key);
@@ -453,17 +478,61 @@ export class Sound {
     this.crackle(time + 0.03, 0.32 * scale, 0.07 * volume);
   }
 
+  /** Перезвон расстроенных обертонов: сфера, магия и ударные волны. */
+  private shimmer(time: number, volume: number, pitch: number, voice: WeaponVoice, gun = false): void {
+    const spread = 8 + voice.accent * 34;
+    this.tone(time, 0.24 * voice.tail, 0.03 * volume, (1450 + voice.accent * 900) * pitch, {
+      wave: 'sine', to: (2100 + voice.phase * 700) * pitch, detune: spread, attack: 0.008, gun,
+    });
+    this.tone(time + 0.01, 0.19 * voice.tail, 0.022 * volume, (2350 + voice.phase * 800) * pitch, {
+      wave: 'triangle', to: (1750 + voice.accent * 600) * pitch, detune: -spread, attack: 0.01, gun,
+    });
+    this.noise(time + 0.004, 0.16 * voice.tail, 0.02 * volume, {
+      type: 'bandpass', q: 4.5,
+      from: (3200 + voice.accent * 2200) * pitch,
+      to: (1800 + voice.phase * 1400) * pitch,
+      attack: 0.006, gun,
+    });
+  }
+
+  /** Поджог фитиля: свист и щелчок перед взрывом. */
+  private fuse(time: number, volume: number, pitch: number, voice: WeaponVoice, gun = false): void {
+    this.noise(time, 0.09, 0.035 * volume, {
+      type: 'bandpass', q: 1.4,
+      from: (900 + voice.accent * 700) * pitch,
+      to: (2800 + voice.phase * 1400) * pitch,
+      attack: 0.004, gun,
+    });
+    this.mechanism(time + 0.07, 0.035 * volume, 1.15 * pitch, gun);
+  }
+
+  /** Зарядка: короткий восходящий тон перед выстрелом сферы или волны. */
+  private charge(time: number, volume: number, pitch: number, voice: WeaponVoice, gun = false): void {
+    this.tone(time, 0.075, 0.03 * volume, (240 + voice.accent * 160) * pitch, {
+      wave: 'triangle', to: (900 + voice.phase * 700) * pitch,
+      filter: { from: 500 * pitch, to: 3200 * pitch, q: 0.9 }, attack: 0.006, gun,
+    });
+    this.noise(time + 0.01, 0.055, 0.02 * volume, {
+      type: 'bandpass', q: 2.2,
+      from: (1200 + voice.accent * 800) * pitch,
+      to: (3600 + voice.phase * 900) * pitch,
+      attack: 0.004, gun,
+    });
+  }
+
   /** Огнемёт: turbulence, низкий гул и редкие всплески пламени. */
   private flameVoice(time: number, volume: number, pitch: number, voice?: WeaponVoice): void {
     const tail = voice?.tail ?? 1;
     const grit = voice?.grit ?? 1;
+    const accent = voice?.accent ?? 0.5;
     this.noise(time, 0.44 * tail, 0.15 * volume, {
-      type: 'bandpass', q: 0.75, from: 620 * pitch, to: 900 * pitch, attack: 0.025,
-      wobble: { rate: 11 + Math.random() * 4, depth: 260 * pitch },
+      type: 'bandpass', q: 0.75,
+      from: (560 + accent * 180) * pitch, to: (760 + accent * 340) * pitch, attack: 0.025,
+      wobble: { rate: 9 + accent * 9 + Math.random() * 3, depth: (180 + accent * 200) * pitch },
     });
     this.noise(time, 0.36 * tail, 0.1 * volume, {
-      type: 'lowpass', from: 1500 * pitch, to: 320 * pitch, attack: 0.02,
-      wobble: { rate: 7, depth: 180 * pitch },
+      type: 'lowpass', from: (1200 + accent * 700) * pitch, to: (260 + accent * 160) * pitch, attack: 0.02,
+      wobble: { rate: 5 + accent * 5, depth: (130 + accent * 130) * pitch },
     });
     this.noise(time + 0.01, 0.4 * tail, 0.07 * volume * grit, {
       color: 'brown', type: 'lowpass', from: 420 * pitch, to: 110 * pitch, attack: 0.02,
@@ -705,7 +774,8 @@ export class Sound {
     if (!weaponId) {
       return {
         family: 'gun', mode: 'rifle', pitch: 1, brightness: 1, body: 1,
-        signature: 0.5, tier: 0, rank: 0, tail: 1, grit: 1, metal: false, undead: false,
+        signature: 0.5, tier: 0, rank: 0, tail: 1, grit: 1, accent: 0.5, phase: 0.5,
+        metal: false, undead: false,
       };
     }
     const id = weaponId.toLowerCase();
@@ -769,6 +839,8 @@ export class Sound {
       rank,
       tail: clamp(0.88 + frac(29) * 0.42 + tier * 0.05, 0.85, 1.5),
       grit: 0.75 + frac(21) * 0.6,
+      accent: frac(33),
+      phase: frac(37),
       metal,
       undead,
     };
@@ -818,9 +890,11 @@ export class Sound {
   }
 
   /** Выстрел конкретного оружия: тип задаёт основу, ID — неповторимый тембр и баллистику. */
-  shoot(kind: WeaponKind, weaponId?: string): void {
+  shoot(kind: WeaponKind, weaponId?: string, opts: ShootOptions = {}): void {
+    const source = opts.source ?? 'weapon';
+    const isWeapon = source === 'weapon' && Boolean(weaponId);
     const voice = this.weaponVoice(kind, weaponId);
-    const time = this.ready(`shoot:${kind}:${weaponId ?? '-'}`, SHOOT_GAPS[kind] ?? 0.08);
+    const time = this.ready(`shoot:${source}:${kind}:${weaponId ?? '-'}`, SHOOT_GAPS[kind] ?? 0.08);
     if (time === null) return;
     const pitch = voice.pitch * (0.97 + Math.random() * 0.06);
     const volume = voice.body * (0.95 + Math.random() * 0.1);
@@ -828,16 +902,25 @@ export class Sound {
 
     switch (kind) {
       case 'melee':
-        this.meleeVoice(time, volume, pitch, voice);
+        if (isWeapon && voice.family === 'arcane') {
+          // Маги не должны звучать как огнестрел: у них лёгкий энергетический удар.
+          this.charge(time - 0.04, volume * 0.8, pitch, voice);
+          this.shimmer(time, volume * 0.9, pitch, voice);
+          this.thump(time + 0.01, 0.22 * volume, pitch * 0.9, 0.16);
+        } else this.meleeVoice(time, volume, pitch, voice);
         break;
       case 'explosive': {
         const id = weaponId?.toLowerCase() ?? '';
         const launcher = /grenade|rocket|launcher/.test(id) || (gun && voice.mode === 'launcher');
-        if (launcher) this.launcherVoice(time, volume, pitch, voice, 1.25);
+        const aoeScale = isWeapon && opts.aoe
+          ? 1 + Math.min(1, opts.aoe / 120) * voice.body
+          : 1;
+        if (isWeapon) this.fuse(time - 0.07, volume * 0.9, pitch, voice, gun);
+        if (launcher) this.launcherVoice(time, volume, pitch, voice, 1.25 * aoeScale);
         else {
           this.transient(time, 0.12 * volume, 0.75 * pitch);
           this.blast(time, volume * voice.body, pitch * (voice.family === 'heavy' ? 0.88 : 1),
-            voice.tier >= 2 ? 1.15 : 1);
+            (voice.tier >= 2 ? 1.15 : 1) * aoeScale);
           if (voice.family === 'arcane') this.magic(time + 0.01, volume * 0.7, pitch * 0.9, true, voice);
           if (voice.undead) this.undeadVoice(time + 0.02, volume * 0.6, pitch, voice);
           if (id.includes('molotov')) this.flameVoice(time + 0.02, volume * 0.7, pitch, voice);
@@ -845,6 +928,7 @@ export class Sound {
         break;
       }
       case 'nova':
+        if (isWeapon) this.charge(time - 0.05, volume, pitch, voice, gun);
         if (voice.family === 'arcane') this.magic(time, volume, pitch * 0.9, true, voice);
         else if (voice.family === 'steel') this.steelVoice(time, volume, pitch, voice, false);
         else if (voice.family === 'bone' || voice.undead) this.undeadVoice(time, volume * 1.1, pitch * 0.85, voice);
@@ -856,11 +940,18 @@ export class Sound {
             type: 'lowpass', from: 1800 * pitch, to: 120 * pitch, attack: 0.002, gun: true,
           });
         }
+        if (isWeapon) this.shimmer(time + 0.06, volume * 0.75, pitch, voice, gun);
         break;
       case 'flame':
         this.flameVoice(time, volume, pitch * voice.brightness, voice);
         break;
       case 'mine':
+        if (isWeapon) {
+          // Мина теперь узнаётся по пищалке перед щелчком и взрывом.
+          this.tone(time + 0.05, 0.09, 0.05 * volume, (820 + voice.accent * 420) * pitch, {
+            wave: 'square', to: (1350 + voice.phase * 500) * pitch, attack: 0.003, gun: true,
+          });
+        }
         this.mechanism(time, 0.08 * volume, 1.2 * pitch, true);
         this.blast(time + 0.045, volume * 0.85, pitch, 0.85);
         break;
@@ -869,8 +960,14 @@ export class Sound {
         else if (voice.family === 'arcane') this.magic(time, volume, pitch * 1.05 * voice.brightness, false, voice);
         else if (voice.family === 'steel') this.steelVoice(time, volume, pitch, voice, true);
         else if (voice.family === 'heavy') this.heavyVoice(time, volume, pitch, voice);
-        else if (gun) this.firearmVoice(time, volume, pitch, voice);
+        else if (gun) {
+          if (isWeapon) this.charge(time - 0.035, volume * 0.85, pitch, voice, true);
+          this.firearmVoice(time, volume, pitch, voice);
+        }
         else this.fleshVoice(time, volume, pitch, voice);
+        if (isWeapon && (voice.family === 'arcane' || voice.family === 'bone' || voice.undead || gun)) {
+          this.shimmer(time + 0.015, volume * 0.8, pitch, voice, gun);
+        }
         break;
       case 'spread':
         if (gun) this.firearmVoice(time, volume, pitch, voice);

@@ -20,6 +20,7 @@ const canvas = must<HTMLCanvasElement>('#game');
 const storage = new Storage();
 const sound = new Sound();
 sound.muted = storage.data.muted;
+sound.setMasterVolume(storage.data.masterVolume);
 sound.setMusicSettings(storage.data.music.enabled, storage.data.music.volume);
 
 const yandex = new Yandex();
@@ -36,6 +37,7 @@ const game = new Game(canvas, input, sound, storage, yandex, {
   levelUp: (choices) => ui.showLevelUp(choices),
   gameOver: (result) => ui.showGameOver(result),
   toast: (text) => ui.toast(text),
+  tempShop: (ctx) => ui.showTempShop(ctx),
 });
 ui.attachGame(game);
 
@@ -84,6 +86,7 @@ ui.attachBase(() => {
 
 window.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
+  if (ui.closeTempShop()) return;
   if (baseActive) leaveBase();
   else if (game.state === 'playing' || game.state === 'paused') ui.showPause();
 });

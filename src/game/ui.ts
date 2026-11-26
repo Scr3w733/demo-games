@@ -38,6 +38,7 @@ import type { Sound } from './audio';
 import { keyFromEvent } from './input';
 import { MenuBackground } from './menuBackground';
 import type { Storage } from './storage';
+import type { TempShopContext } from './tempShopDb';
 import { LOCALES, translate } from './i18n';
 import { AD, Yandex } from './yandex';
 import type { AbilitySlotState, Bindings, CaseReward, ClassId, LocaleId, MusicSettings, RarityId, RunResult, UpgradeDef } from './types';
@@ -76,6 +77,14 @@ type StorageWithGraphics = Storage & { data: Storage['data'] & { graphics?: Part
 const DEFAULT_MUSIC: MusicSettings = { enabled: true, volume: 0.7 };
 
 const MENU_PAGES: MenuPage[] = ['home', 'base', 'heroes', 'armory', 'shop', 'levels', 'mail', 'settings'];
+/** Временные данные до подключения авторизации и серверной базы. */
+const TOP_PLAYERS_STUB = [
+  { name: 'STRANGER_01', level: 60 },
+  { name: 'STRANGER_02', level: 54 },
+  { name: 'STRANGER_03', level: 49 },
+  { name: 'STRANGER_04', level: 43 },
+  { name: 'STRANGER_05', level: 38 },
+];
 const GRAPHICS_QUALITIES: GraphicsQuality[] = ['low', 'medium', 'high', 'ultra'];
 const GRAPHICS_TOGGLES: GraphicsToggle[] = ['blood', 'particles', 'lighting', 'vegetation', 'animals', 'shake', 'motionBlur', 'festive'];
 const DEFAULT_GRAPHICS: GraphicsSettings = {
@@ -132,6 +141,7 @@ export class UI {
   private shopTab: 'weapons' | 'cases' | 'diamonds' | 'skins' | 'modules' = 'weapons';
   private shopClass: ClassId | 'all' = 'all';
   private weaponPage = 0;
+  private caseScroll = 0;
   private selectWeaponPage = 0;
   private classPage = 0;
   private selectedLevel = 1;
@@ -485,6 +495,17 @@ export class UI {
         <span>${this.t('classes')}</span><span>${this.storage.data.unlockedClasses.length} / ${CLASSES.length}</span>
         <span>${this.t('weapons')}</span><span>${this.storage.data.unlockedWeapons.length} / ${WEAPONS.length}</span>
       </div>
+      <p class="subtitle">ТОП ИГРОКОВ ПО УРОВНЮ</p>
+      <div class="leaderboard">
+        ${TOP_PLAYERS_STUB.map((entry, index) => `
+          <div class="leaderboard-row">
+            <span>${index + 1}.</span>
+            <span>${escapeHtml(entry.name)}</span>
+            <b>${entry.level}</b>
+          </div>
+        `).join('')}
+      </div>
+      <p class="page-note">Имена и уровни — заглушки. Реальный рейтинг появится после подключения аккаунтов и базы данных.</p>
       <div class="btn-row">
         <button class="btn btn-primary" data-act="play">${this.t('startGame')}</button>
         <button class="btn btn-accent" data-act="openworld">✦ ОТКРЫТЫЙ МИР · 14400×10200</button>
@@ -1146,10 +1167,10 @@ export class UI {
       content = this.diamondShopContent();
     } else if (this.shopTab === 'cases') {
       content = `
-        <div class="shop-grid shop-grid--cases">
+        <div class="case-carousel" data-case-carousel>
           <div class="shop-card">
             <b>Кейс снаряжения</b>
-            <small>Оружие, скин или модуль. Шанс ультрамифического — 0,01%.</small>
+            <small>Оружие, скин, модуль, монеты или алмазы. Шанс ультрамифического — 0,01%.</small>
             ${this.rarityBadge('rare')}
             <p class="hint">В инвентаре: ${escapeHtml(this.storage.data.cases)} шт.</p>
             <button class="btn btn-small" data-buy-case ${coins < CASE_PRICE ? 'disabled' : ''}>КУПИТЬ · ${CASE_PRICE}</button>
@@ -1165,10 +1186,14 @@ export class UI {
           </div>
           <div class="shop-card" style="--rarity:#7ce0d0">
             <b>Премиальный кейс</b>
-            <small>Гарантированно эпический предмет или лучше. Шанс ультрамифического остаётся 0,01%.</small>
+            <small>Гарантированно эпический предмет или лучше. Монеты и алмазы тоже выпадают. Шанс ультра — 0,01%.</small>
             ${this.rarityBadge('epic')}
             <button class="btn btn-small btn-primary" data-buy-premium-case ${this.storage.data.diamonds < PREMIUM_CASE_PRICE ? 'disabled' : ''}>ОТКРЫТЬ · ${PREMIUM_CASE_PRICE} ◆</button>
           </div>
+        </div>
+        <div class="btn-row case-nav">
+          <button class="btn btn-small" data-case-scroll="prev">◀ КЕЙСЫ</button>
+          <button class="btn btn-small" data-case-scroll="next">КЕЙСЫ ▶</button>
         </div>
       `;
     } else if (this.shopTab === 'skins') {
@@ -1228,6 +1253,19 @@ export class UI {
       ${content}
     `), true);
     this.bindMenuNav();
+
+    const carousel = this.overlay.querySelector<HTMLElement>('[data-case-carousel]');
+    if (carousel) {
+      carousel.scrollLeft = this.caseScroll;
+      carousel.addEventListener('scroll', () => { this.caseScroll = carousel.scrollLeft; });
+      for (const button of this.overlay.querySelectorAll<HTMLElement>('[data-case-scroll]')) {
+        button.addEventListener('click', () => {
+          const direction = button.dataset.caseScroll === 'next' ? 1 : -1;
+          carousel.scrollBy({ left: direction * carousel.clientWidth * 0.8, behavior: 'smooth' });
+          this.sound.click();
+        });
+      }
+    }
 
     for (const button of this.overlay.querySelectorAll<HTMLElement>('[data-shop-tab]')) {
       button.addEventListener('click', () => {
@@ -1443,6 +1481,9 @@ export class UI {
       this.storage.update({ modules: [...this.storage.data.modules, reward.id] });
     } else if (reward.kind === 'class') {
       this.storage.update({ unlockedClasses: [...this.storage.data.unlockedClasses, reward.id as ClassId] });
+    } else if (reward.kind === 'diamonds') {
+      const amount = reward.amount ?? 1;
+      this.storage.update({ diamonds: this.storage.data.diamonds + amount });
     } else {
       const amount = reward.amount ?? 0;
       this.storage.update({ coins: this.storage.data.coins + amount });
@@ -1453,7 +1494,11 @@ export class UI {
       <div class="case-reward" style="--rarity:${RARITIES[reward.rarity].color}">
         <h2>${reward.name.toUpperCase()}</h2>
         ${this.rarityBadge(reward.rarity)}
-        <p class="lede">${reward.kind === 'class' ? 'Класс открыт и доступен в меню героев.' : 'Предмет добавлен в инвентарь.'}</p>
+        <p class="lede">${
+          reward.kind === 'class' ? 'Класс открыт и доступен в меню героев.'
+            : reward.kind === 'coins' || reward.kind === 'diamonds' ? 'Валюта зачислена на счёт.'
+              : 'Предмет добавлен в инвентарь.'
+        }</p>
       </div>
       <div class="btn-row">
         <button class="btn btn-primary" data-act="shop">${this.t('moreCases')}</button>
@@ -1471,10 +1516,65 @@ export class UI {
     this.showCaseReward(rollClassCase(this.storage.data.unlockedClasses));
   }
 
+  /** Витрина торговца открытого мира: игра на паузе, покупка не сохраняет оружие в профиле. */
+  showTempShop(ctx: TempShopContext): void {
+    if (!this.game || (this.game.state !== 'playing' && this.game.state !== 'paused')) return;
+    if (this.game.state === 'playing') this.game.togglePause();
+    this.renderTempShop(ctx);
+  }
+
+  private renderTempShop(ctx: TempShopContext): void {
+    const cards = ctx.offers.map((offer) => {
+      const active = ctx.activeWeaponId === offer.weaponId;
+      const affordable = ctx.coins >= offer.price;
+      return `
+        <button class="shop-card temp-shop-card" type="button" data-temp-weapon="${escapeHtml(offer.weaponId)}"
+          style="--rarity:${escapeHtml(offer.color)}" ${active || !affordable ? 'disabled' : ''}>
+          <b>${escapeHtml(offer.name)}</b>
+          <small>${escapeHtml(offer.description)}</small>
+          <span class="hint">${escapeHtml(offer.kind.toUpperCase())}</span>
+          <span class="price">${active ? 'АКТИВНО' : `${offer.price} МОНЕТ`}</span>
+        </button>
+      `;
+    }).join('');
+    this.setScreen(`
+      <div data-temp-shop>
+        <p class="subtitle">ОТКРЫТЫЙ МИР · ТОРГОВЕЦ</p>
+        <h2>ОРУЖИЕ ДО КОНЦА ЗАБЕГА</h2>
+        <p class="lede">Монеты в забеге: <b>${escapeHtml(ctx.coins)}</b>. Купленное оружие действует только до выхода из игры и не попадает в постоянный инвентарь.</p>
+        <div class="shop-grid shop-grid--cases">${cards}</div>
+        <div class="btn-row">
+          <button class="btn btn-primary" data-act="leave">ВЕРНУТЬСЯ В МИР</button>
+        </div>
+      </div>
+    `);
+    for (const card of this.overlay.querySelectorAll<HTMLElement>('[data-temp-weapon]')) {
+      card.addEventListener('click', () => {
+        if (!this.game?.buyTempWeapon(card.dataset.tempWeapon ?? '')) return;
+        this.renderTempShop(this.game.tempShopState());
+      });
+    }
+    this.bind('[data-act="leave"]', () => this.closeTempShop());
+  }
+
+  /** ESC закрывает магазин и возвращает управление забегу. */
+  closeTempShop(): boolean {
+    if (!this.overlay.querySelector('[data-temp-shop]')) return false;
+    this.game?.resume();
+    this.hideOverlay();
+    return true;
+  }
+
   showPause(): void {
     if (!this.game || (this.game.state !== 'playing' && this.game.state !== 'paused')) return;
     if (this.game.state === 'playing') this.game.togglePause();
+    const volumePercent = Math.round(this.storage.data.masterVolume * 100);
     this.setScreen(`
+      <label class="pause-volume">
+        <span>ГРОМКОСТЬ ИГРЫ</span>
+        <input id="pause-volume" type="range" min="0" max="100" step="1" value="${volumePercent}" aria-label="Громкость игры">
+        <b id="pause-volume-value">${volumePercent}%</b>
+      </label>
       <h2>ПАУЗА</h2>
       <p class="lede">Передышка. Мёртвые подождут.</p>
       <div class="btn-row">
@@ -1482,6 +1582,19 @@ export class UI {
         <button class="btn" data-act="menu">${this.t('toMenu')}</button>
       </div>
     `);
+    const slider = this.overlay.querySelector<HTMLInputElement>('#pause-volume');
+    const valueLabel = this.overlay.querySelector<HTMLElement>('#pause-volume-value');
+    if (slider && valueLabel) {
+      slider.addEventListener('input', () => {
+        const volume = Math.min(1, Math.max(0, Number(slider.value) / 100));
+        this.sound.setMasterVolume(volume);
+        valueLabel.textContent = `${slider.value}%`;
+      });
+      slider.addEventListener('change', () => {
+        const volume = Math.min(1, Math.max(0, Number(slider.value) / 100));
+        this.storage.update({ masterVolume: volume });
+      });
+    }
     this.bind('[data-act="resume"]', () => {
       this.game?.resume();
       this.hideOverlay();
