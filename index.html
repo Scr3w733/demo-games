@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+    <meta name="theme-color" content="#0b0d10" />
+    <meta name="description" content="Некрополь: Последний свет — пиксельный survivor в мире, где мёртвые не спят. Бесплатно в Яндекс Играх." />
+    <title>Некрополь: Последний свет</title>
+    <link rel="preload" href="/fonts/golos-text-cyrillic.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/playfair-display-cyrillic.woff2" as="font" type="font/woff2" crossorigin />
+    <!-- SDK Яндекс Игр подгружается динамически только внутри iframe Яндекса (см. yandex.ts). -->
+  </head>
+  <body>
+    <div id="app">
+      <div id="stage">
+        <canvas id="menu-bg" class="menu-bg" aria-hidden="true"></canvas>
+        <canvas id="game" width="960" height="540" aria-label="Игровое поле"></canvas>
+
+        <div id="hud" class="hud hidden">
+          <div class="hud-top">
+            <div class="hud-chip"><span>ВРЕМЯ</span><b id="hud-time">00:00</b></div>
+            <div class="hud-chip"><span>ВОЛНА</span><b id="hud-wave">1</b></div>
+            <div class="hud-chip"><span>УБИЙСТВА</span><b id="hud-kills">0</b></div>
+            <div class="hud-chip"><span>МОНЕТЫ</span><b id="hud-coins">0</b></div>
+            <div class="hud-chip hud-chip--diamond"><span>АЛМАЗЫ</span><b id="hud-diamonds">0</b></div>
+            <div class="hud-chip hud-chip--biome"><span>ЛОКАЦИЯ</span><b id="hud-biome">—</b></div>
+            <div class="hud-chip hud-chip--light"><span id="hud-light-label">СВЕТ</span><b id="hud-light">100%</b></div>
+            <button id="hud-interact" class="icon-btn icon-btn--interact" type="button" aria-label="Взаимодействие">G</button>
+            <button id="hud-pause" class="icon-btn" type="button" aria-label="Пауза">II</button>
+          </div>
+          <div id="hud-hint" class="hud-hint"></div>
+          <div class="hud-left">
+            <div id="hud-panel" class="hud-panel">
+              <div class="hud-panel__title"><span id="hud-state-label">СОСТОЯНИЕ</span><b id="hud-vitals-label">VITALS</b></div>
+              <div class="vital-line vital-line--hp">
+                <span class="vital-line__label" id="hud-hp-label">HP · ЗДОРОВЬЕ</span>
+                <div class="bar bar-hp"><i id="hp-fill"></i><span id="hp-text">0/0</span></div>
+              </div>
+              <div class="vital-line vital-line--armor">
+                <span class="vital-line__label" id="hud-armor-label">БРОНЯ · ARMOR</span>
+                <div class="bar bar-armor"><i id="armor-fill"></i><span id="hud-armor">0</span></div>
+              </div>
+              <div class="vital-row">
+                <span class="vital-chip vital-chip--crit">✧ КРИТ <b id="hud-crit">5%</b></span>
+                <span class="set-chip" id="hud-armor-set">КОМПЛЕКТ</span>
+              </div>
+              <div id="hud-statuses" class="hud-statuses"></div>
+              <div class="hud-panel__subtitle"><span id="hud-abilities-label">БЫСТРЫЕ СПОСОБНОСТИ</span><b id="hud-fire-mode">ЛКМ</b></div>
+              <div id="abilities" class="abilities"></div>
+            </div>
+          </div>
+          <div class="hud-bottom">
+            <div class="bars">
+              <div class="bar bar-xp"><i id="xp-fill"></i><span id="xp-text">LVL 1</span></div>
+            </div>
+            <div class="weapon-chip"><span class="weapon-label">ОРУЖИЕ · <em id="hud-arena">L1</em> · <em id="hud-mode">ОБЫЧНЫЙ</em></span><b id="weapon-name">—</b></div>
+          </div>
+        </div>
+
+        <div id="joystick" class="joystick hidden"><div id="stick" class="stick"></div></div>
+        <div id="overlay" class="overlay"></div>
+        <div id="toast" class="toast"></div>
+        <div class="owner-note">Проект: lappyforkyzz@mail.ru</div>
+      </div>
+
+      <div id="loader" class="loader" role="status" aria-live="polite">
+        <div class="loader__panel">
+          <div class="loader__sigil" aria-hidden="true">☠</div>
+          <p class="loader__eyebrow">НЕКРОПОЛЬ · ЗАГРУЗКА МИРА</p>
+          <h1 class="loader__title">ПОСЛЕДНИЙ СВЕТ</h1>
+          <div class="loader__bar"><i id="loader-fill"></i></div>
+          <div class="loader__meta"><span id="loader-stage">Инициализация ядра…</span><b id="loader-percent">0%</b></div>
+          <p class="loader__tip" id="loader-tip">Совет: вкладки меню переключаются кликом, а фонарик включается на T.</p>
+        </div>
+        <div class="loader__owner">Проект: lappyforkyzz@mail.ru</div>
+      </div>
+    </div>
+    <script type="module" src="/src/game/main.ts"></script>
+  </body>
+</html>
